@@ -21,6 +21,8 @@ object SbtIdeaPlugin extends Plugin {
   val ideaExtraFacets = SettingKey[NodeSeq]("idea-extra-facets")
   val ideaIncludeScalaFacet = SettingKey[Boolean]("idea-include-scala-facet")
   val ideaExtraTestConfigurations = SettingKey[Seq[Configuration]]("idea-extra-test-configurations","Extra configurations to be included in test sources")
+  val ideaManagedSourceSubDirs = SettingKey[Boolean]("idea-managed-source-sub-dirs",
+                                                     "If set to \"false\", then gen-idea will not list sub-folders inside `sourceManaged` as source folders and will list only `managedSourceDirectories`.")
 
   override lazy val settings = Seq(
     Keys.commands += ideaCommand,
@@ -32,7 +34,8 @@ object SbtIdeaPlugin extends Plugin {
     ideaExcludeFolders <<= ideaExcludeFolders ?? Nil,
     ideaExtraFacets <<= ideaExtraFacets ?? NodeSeq.Empty,
     ideaIncludeScalaFacet <<= ideaIncludeScalaFacet ?? true,
-    ideaExtraTestConfigurations <<= ideaExtraTestConfigurations ?? Seq()
+    ideaExtraTestConfigurations <<= ideaExtraTestConfigurations ?? Seq(),
+    ideaManagedSourceSubDirs <<= ideaManagedSourceSubDirs ?? true
   )
 
   private val NoClassifiers = "no-classifiers"
@@ -166,17 +169,26 @@ object SbtIdeaPlugin extends Plugin {
     val scalacOptions: Seq[String] = settings.optionalTask(Keys.scalacOptions in Compile).getOrElse(Seq())
     val baseDirectory = settings.setting(Keys.baseDirectory, "Missing base directory!")
 
-    def sourceDirectoriesFor(config: Configuration) = {
-      val hasSourceGen = settings.optionalSetting(Keys.sourceGenerators in config).exists(!_.isEmpty)
-      val managedSourceDirs = if (hasSourceGen) {
+    def findManagedSubDirs(config: Configuration): Seq[File] = {
+      val hasSourceGen = settings.optionalSetting(Keys.sourceGenerators in config).exists(_.nonEmpty)
+      if (hasSourceGen) {
         state.log.info("Running " + config.name + ":" + Keys.managedSources.key.label + " ...")
         EvaluateTask(buildStruct, Keys.managedSources in config, state, projectRef)
         val managedSourceRoots = settings.setting(Keys.managedSourceDirectories in config, "Missing managed source directories!")
         val sourceManaged = settings.setting(Keys.sourceManaged in config, "Missing 'sourceManaged'")
-        def listSubdirectories(f: File) = Option(f.listFiles()).map(_.toSeq.filter(_.isDirectory)).getOrElse(Seq.empty[File])
+        def listSubdirectories(f: File) = Option(f.listFiles()).map(_.toSeq.filter(_.isDirectory)).getOrElse(Nil)
         (listSubdirectories(sourceManaged) ++ managedSourceRoots).distinct
       }
-      else Seq.empty[File]
+      else Nil
+    }
+
+    def sourceDirectoriesFor(config: Configuration) = {
+      val shouldListManagesSubDirs = settings.settingWithDefault(ideaManagedSourceSubDirs, true)
+      val managedSourceDirs = if (shouldListManagesSubDirs) {
+        findManagedSubDirs(config)
+      } else {
+        settings.settingWithDefault(Keys.managedSourceDirectories in config, Nil).distinct
+      }
 
       // By default, SBT considers .scala files in the base directory as a project as compile
       // scoped sources. SBT itself uses this structure.
